@@ -225,23 +225,15 @@ export default function Home() {
       const bridgeAddr = currentNetwork === 'subtensor' ? BRIDGE_ADDRESS_SUBTENSOR : BRIDGE_ADDRESS;
       const bridge = new ethers.Contract(
         bridgeAddr,
-        ["function requestTransfer(address, address, uint256, uint64) payable"],
-
+        ["function requestTransfer(address token, address to, uint256 amount, uint64 destChainId) payable"],
         signer
       );
       
       const amount = ethers.utils.parseEther(values.amount);
       const isNative = values.transferType === "native";
-      
-      const nonce = await provider.getTransactionCount(account);
+      console.log("Is native:", isNative);
       
       const gasPrice = await provider.getGasPrice();
-      const increasedGasPrice = gasPrice.mul(2);
-      const txOptions = {
-        gasPrice: increasedGasPrice,
-        gasLimit: 300000,
-        nonce: nonce
-      };
 
       // Use different token address based on current network
       const tokenAddr = isNative ? ethers.constants.AddressZero : 
@@ -249,40 +241,62 @@ export default function Home() {
       
       console.log("Token address:", tokenAddr);
 
+      // For ERC20 transfers, handle approve transaction first
       if (!isNative) {
         const bridgedToken = new ethers.Contract(
           tokenAddr,
           ["function approve(address, uint256)"],
           signer
         );
-        const approveTx = await bridgedToken.approve(bridgeAddr, amount, txOptions);
+        const approveTx = await bridgedToken.approve(bridgeAddr, amount, {
+          gasPrice: gasPrice,
+          gasLimit: 300000,
+        });
         await approveTx.wait();
         
-        // Increment nonce for the next transaction
-        txOptions.nonce = nonce + 1;
         console.log("Approved bridged token");
       }
 
+      // Get the current nonce for the signer
+      const nonce = await provider.getTransactionCount(account);
+
+      // Submit transfer with current nonce
       console.log("Requesting transfer...");
       const destinationChainId = parseInt(values.destinationChainId);
       console.log("Destination chain ID:", destinationChainId);
 
-      // Include gas settings and nonce in the transfer transaction
-      const transferTxOptions = {
-        ...txOptions,
-        value: isNative ? amount : 0
-      };
-
-      const tx = await bridge.requestTransfer(
-        tokenAddr,
-        values.address,
-        amount,
-        destinationChainId,
-        transferTxOptions
-      );
-      await tx.wait();
-      console.log("Transfer request submitted successfully!");
-      
+      try {
+        const tx = await bridge.requestTransfer(
+          tokenAddr,
+          values.address,
+          amount,
+          destinationChainId,
+          {
+            gasPrice: gasPrice,
+            gasLimit: 300000,
+            value: isNative ? amount : 0,
+            nonce: nonce // Explicitly set the nonce
+          }
+        );
+        console.log("Transaction submitted:", tx.hash);
+        const receipt = await tx.wait();
+        if (receipt.status === 0) {
+          console.error("Transaction reverted");
+          throw new Error("Transaction reverted");
+        }
+        console.log("Transfer request submitted successfully!");
+      } catch (error: any) {
+        if (error.code === 'ACTION_REJECTED') {
+          console.error("Transaction rejected by user");
+          throw new Error("Transaction rejected by user");
+        } else if (error.code === 'INSUFFICIENT_FUNDS') {
+          console.error("Insufficient funds for transaction");
+          throw new Error("Insufficient funds for transaction");
+        } else {
+          console.error("Transaction failed:", error.message || error);
+          throw error;
+        }
+      }
       await updateBalances();
       alert("Transfer request submitted successfully!");
     } catch (error) {
