@@ -18,7 +18,6 @@ import {
   SelectValue,
 } from "@/components/ui/select"
 import { Input } from "@/components/ui/input"
-import Image from "next/image";
 import localFont from "next/font/local";
 import { useEffect, useState } from "react"
 import { ethers } from "ethers"
@@ -45,7 +44,7 @@ const formSchema = z.object({
   amount: z.string().min(1, "Amount is required"),
   transferType: z.string().min(1, "Transfer type is required"),
   address: z.string().min(42, "Invalid address length").max(42),
-  chainId: z.string().min(1, "Chain is required"),
+  destinationChainId: z.string().min(1, "Chain is required"),
 })
 
 // Update NETWORKS with chainId as numbers instead of strings
@@ -57,7 +56,7 @@ const NETWORKS = {
     rpcUrls: ["http://localhost:8545"],
   },
   "subtensor": {
-    chainId: 31338,
+    chainId: 945,
     chainName: "Local Subtensor",
     nativeCurrency: { name: "Subtensor", symbol: "TAO", decimals: 18 },
     rpcUrls: ["http://localhost:8546"],
@@ -67,6 +66,10 @@ const NETWORKS = {
 // Add these constants at the top level with your NETWORKS
 const BRIDGE_ADDRESS = "0x71c95911e9a5d330f4d621842ec243ee1343292e"
 const BRIDGED_TOKEN_ADDRESS = "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+const BRIDGE_ADDRESS_SUBTENSOR = "0x71c95911e9a5d330f4d621842ec243ee1343292e"
+const BRIDGED_TOKEN_ADDRESS_SUBTENSOR = "0x5fbdb2315678afecb367f032d93f642f64180aa3"
+// const BRIDGE_ADDRESS_SUBTENSOR = "0x8f8903DADc4316228C726C6e44dd34800860Fc62"
+// const BRIDGED_TOKEN_ADDRESS_SUBTENSOR = "0x01A64AA532801026d4856e437A893ab1d7992c92"
 
 export default function Home() {
   const [provider, setProvider] = useState<ethers.providers.Web3Provider | null>(null)
@@ -82,7 +85,7 @@ export default function Home() {
       amount: "",
       transferType: "",
       address: "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC",
-      chainId: "",
+      destinationChainId: "",
     },
   })
 
@@ -150,8 +153,8 @@ export default function Home() {
       setCurrentNetwork(networkType);
       
       // Set the destination chainId
-      const destinationChainId = networkType === 'ethereum' ? '31338' : '31337';
-      form.setValue('chainId', destinationChainId);
+      const destinationChainId = networkType === 'ethereum' ? NETWORKS.ethereum.chainId : NETWORKS.subtensor.chainId;
+      form.setValue('destinationChainId', destinationChainId.toString());
 
     } catch (error) {
       console.error(`Error connecting to ${networkType}:`, error);
@@ -208,7 +211,7 @@ export default function Home() {
     }
   }, [account, provider, currentNetwork, form.watch("transferType")]);
 
-  // Update onSubmit to use standard 18 decimals
+  // Update onSubmit to use network-specific addresses
   async function onSubmit(values: z.infer<typeof formSchema>) {
     if (!provider || !account) {
       alert("Please connect your wallet first");
@@ -218,35 +221,41 @@ export default function Home() {
     setLoading(true);
     try {
       const signer = provider.getSigner();
+      // Use different bridge address based on current network
+      const bridgeAddr = currentNetwork === 'subtensor' ? BRIDGE_ADDRESS_SUBTENSOR : BRIDGE_ADDRESS;
       const bridge = new ethers.Contract(
-        BRIDGE_ADDRESS,
-        ["function requestTransfer(address, uint256, uint64, bool) payable"],
+        bridgeAddr,
+        ["function requestTransfer(address, address, uint256, uint64) payable"],
+
         signer
       );
       
       const amount = ethers.utils.parseEther(values.amount);
       const isNative = values.transferType === "native";
       
-      // Get the current nonce
       const nonce = await provider.getTransactionCount(account);
       
-      // Add higher gas price settings and nonce
       const gasPrice = await provider.getGasPrice();
       const increasedGasPrice = gasPrice.mul(2);
       const txOptions = {
         gasPrice: increasedGasPrice,
         gasLimit: 300000,
-        nonce: nonce // Add the nonce here
+        nonce: nonce
       };
+
+      // Use different token address based on current network
+      const tokenAddr = isNative ? ethers.constants.AddressZero : 
+        (currentNetwork === 'subtensor' ? BRIDGED_TOKEN_ADDRESS_SUBTENSOR : BRIDGED_TOKEN_ADDRESS);
       
+      console.log("Token address:", tokenAddr);
+
       if (!isNative) {
-        // Handle ERC20 approval with nonce
         const bridgedToken = new ethers.Contract(
-          BRIDGED_TOKEN_ADDRESS,
+          tokenAddr,
           ["function approve(address, uint256)"],
           signer
         );
-        const approveTx = await bridgedToken.approve(BRIDGE_ADDRESS, amount, txOptions);
+        const approveTx = await bridgedToken.approve(bridgeAddr, amount, txOptions);
         await approveTx.wait();
         
         // Increment nonce for the next transaction
@@ -255,7 +264,7 @@ export default function Home() {
       }
 
       console.log("Requesting transfer...");
-      const destinationChainId = parseInt(values.chainId);
+      const destinationChainId = parseInt(values.destinationChainId);
       console.log("Destination chain ID:", destinationChainId);
 
       // Include gas settings and nonce in the transfer transaction
@@ -265,10 +274,10 @@ export default function Home() {
       };
 
       const tx = await bridge.requestTransfer(
+        tokenAddr,
         values.address,
         amount,
         destinationChainId,
-        isNative,
         transferTxOptions
       );
       await tx.wait();
@@ -375,20 +384,32 @@ export default function Home() {
 
             <FormField
               control={form.control}
-              name="chainId"
-              render={({ field }) => (
-                <FormItem>
-                  <FormLabel>Destination Chain</FormLabel>
-                  <FormControl>
-                    <div className="p-2 border rounded-md bg-muted">
-                      {currentNetwork === 'ethereum' ? `Local Subtensor (Chain ID: ${field.value})` : 
-                       currentNetwork === 'subtensor' ? `Local Ethereum (Chain ID: ${field.value})` : 
-                       'Connect wallet to see destination'}
-                    </div>
-                  </FormControl>
-                  <FormMessage />
-                </FormItem>
-              )}
+              name="destinationChainId"
+              render={({ field }) => {
+                // Set destination chain ID based on current network
+                const destinationChainId = currentNetwork === 'ethereum' ? 
+                  NETWORKS.subtensor.chainId.toString() : 
+                  NETWORKS.ethereum.chainId.toString();
+
+                // Update form value when destination changes
+                if (destinationChainId && field.value !== destinationChainId) {
+                  field.onChange(destinationChainId);
+                }
+
+                return (
+                  <FormItem>
+                    <FormLabel>Destination Chain</FormLabel>
+                    <FormControl>
+                      <div className="p-2 border rounded-md bg-muted">
+                        {currentNetwork === 'ethereum' ? `Local Subtensor (Chain ID: ${NETWORKS.subtensor.chainId})` : 
+                         currentNetwork === 'subtensor' ? `Local Ethereum (Chain ID: ${NETWORKS.ethereum.chainId})` : 
+                         'Connect wallet to see destination'}
+                      </div>
+                    </FormControl>
+                    <FormMessage />
+                  </FormItem>
+                );
+              }}
             />
 
             <Button 
