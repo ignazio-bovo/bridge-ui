@@ -47,29 +47,30 @@ const formSchema = z.object({
   destinationChainId: z.string().min(1, "Chain is required"),
 })
 
-// Update NETWORKS with chainId as numbers instead of strings
+/**
+ * @notice Network configuration for supported chains
+ * @dev Stores chain IDs, names, native currencies and RPC endpoints
+ */
 const NETWORKS = {
   "ethereum": {
     chainId: 31337,
     chainName: "Local Ethereum",
     nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
-    rpcUrls: ["http://localhost:8545"],
+    rpcUrls: ["http://127.0.0.1:8545"],
   },
   "subtensor": {
     chainId: 945,
     chainName: "Local Subtensor",
     nativeCurrency: { name: "Subtensor", symbol: "TAO", decimals: 18 },
-    rpcUrls: ["http://localhost:8546"],
+    rpcUrls: ["http://127.0.0.1:9944"],
   },
 };
 
-// Add these constants at the top level with your NETWORKS
+// @longprao this is the bridge contract address for the ethereum network, should be changed to the deployed bridge contract address in production
 const BRIDGE_ADDRESS = "0x71c95911e9a5d330f4d621842ec243ee1343292e"
 const BRIDGED_TOKEN_ADDRESS = "0x5fbdb2315678afecb367f032d93f642f64180aa3"
 const BRIDGE_ADDRESS_SUBTENSOR = "0x71c95911e9a5d330f4d621842ec243ee1343292e"
 const BRIDGED_TOKEN_ADDRESS_SUBTENSOR = "0x5fbdb2315678afecb367f032d93f642f64180aa3"
-// const BRIDGE_ADDRESS_SUBTENSOR = "0x8f8903DADc4316228C726C6e44dd34800860Fc62"
-// const BRIDGED_TOKEN_ADDRESS_SUBTENSOR = "0x01A64AA532801026d4856e437A893ab1d7992c92"
 
 export default function Home() {
   const [provider, setProvider] = useState<ethers.providers.Web3Provider | null>(null)
@@ -189,7 +190,9 @@ export default function Home() {
       const formattedNativeBalance = ethers.utils.formatEther(balance);
       setNativeBalance(formattedNativeBalance);
 
-      // Get ERC20 balance
+      // TODO: This should be replaced by a call to a token API for the datura bridge
+      // The contract design has changed since the demo and the token deployment has been removed.
+      // @longprao if you are able to develop the front end without this for the moment I have to discuss this part with @mz-datura
       const tokenContract = new ethers.Contract(
         BRIDGED_TOKEN_ADDRESS,
         ["function balanceOf(address) view returns (uint256)"],
@@ -230,7 +233,9 @@ export default function Home() {
       );
       
       const amount = ethers.utils.parseEther(values.amount);
-      const isNative = values.transferType === "native";
+      // @longprao this is not out of date, we support all erc20 + native (ETH / TAO)
+      // so the `values.transferType` is not just "native" or "erc20" but must be inferred from the token address (Native address is 0x0)
+      const isNative = values.transferType === "native"; 
       console.log("Is native:", isNative);
       
       const gasPrice = await provider.getGasPrice();
@@ -250,7 +255,7 @@ export default function Home() {
         );
         const approveTx = await bridgedToken.approve(bridgeAddr, amount, {
           gasPrice: gasPrice,
-          gasLimit: 300000,
+          gasLimit: 300000, // @longprao this is the gas limit rule of thumb value, should be updated to a dynamic gas limit using ethers.js
         });
         await approveTx.wait();
         
@@ -265,6 +270,7 @@ export default function Home() {
       const destinationChainId = parseInt(values.destinationChainId);
       console.log("Destination chain ID:", destinationChainId);
 
+      // @longprao this is the transaction submission logic
       try {
         const tx = await bridge.requestTransfer(
           tokenAddr,
@@ -273,10 +279,13 @@ export default function Home() {
           destinationChainId,
           {
             gasPrice: gasPrice,
-            gasLimit: 300000,
-            value: isNative ? amount : 0,
-            nonce: nonce // Explicitly set the nonce
-          }
+            // @longprao should be updated to a dynamic gas limit (I suppose ethers.js has a function for this)
+            // but this value is good if you want to test quickly other feature and bypass gas limit estimation
+             gasLimit: 300000,
+            value: isNative ? amount : 0, // @longprao this value is the amount of native currency being transferred to the bridge contract
+            // @longprao this should allow you to restart the local hardhat node and submit the same transaction again, without disconnecting the wallet
+            nonce: nonce
+          } // @longprao notice that necessary native amount needed is value + gas price * gas limit, otherwise the transaction will fail
         );
         console.log("Transaction submitted:", tx.hash);
         const receipt = await tx.wait();
